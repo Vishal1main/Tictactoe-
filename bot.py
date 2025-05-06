@@ -1,148 +1,156 @@
-import os
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
+import os
 
-logging.basicConfig(level=logging.INFO)
+# Enable logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 
-TOKEN = os.getenv("BOT_TOKEN")  # Set this in Render environment variables
-PORT = int(os.environ.get("PORT", 8443))
+# Bot token from @BotFather
+TOKEN = os.getenv("BOT_TOKEN", "7666132298:AAGKkh3e9j1dcGniY_0tiOiiUtRYJi10fQg")  # replace with your token or set in environment
 
-games = {}  # key = (chat_id, game_id), value = game state
-game_id_counter = 0
+# Game state storage
+games = {}  # key = chat_id + player1_id + player2_id (tuple), value = game dict
 
-# Start game with /tictactoe
-async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global game_id_counter
-    chat_id = update.effective_chat.id
-    user = update.effective_user
+# Emoji mapping
+symbols = {"X": "❌", "O": "⭕", "": "⬜"}
 
-    game_id_counter += 1
-    game_key = (chat_id, game_id_counter)
-    games[game_key] = {
-        "players": [user.id],
-        "board": [" "] * 9,
-        "turn": None,
-        "message_id": None
+def render_board(board):
+    keyboard = []
+    for i in range(3):
+        row = []
+        for j in range(3):
+            cell = board[i][j]
+            callback_data = f"move_{i}_{j}"
+            row.append(InlineKeyboardButton(symbols[cell], callback_data=callback_data))
+        keyboard.append(row)
+    return InlineKeyboardMarkup(keyboard)
+
+def create_game(player1_id):
+    return {
+        "board": [["" for _ in range(3)] for _ in range(3)],
+        "turn": "X",
+        "players": {"X": player1_id, "O": None},
     }
 
-    join_button = InlineKeyboardMarkup([[InlineKeyboardButton("Join", callback_data=f"join_{chat_id}_{game_id_counter}")]])
-    message = await update.message.reply_text(
-        f"{user.first_name} started a new Tic Tac Toe game!\nClick 'Join' to play.",
-        reply_markup=join_button
-    )
-    games[game_key]["message_id"] = message.message_id
+async def tictactoe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    key = (chat_id, user_id)
 
-# Join button handler
-async def handle_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    for k in games:
+        if k[0] == chat_id and user_id in k:
+            await update.message.reply_text("You're already in a game!")
+            return
+
+    game = create_game(user_id)
+    games[key] = game
+
+    join_button = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Join Game", callback_data=f"join_{user_id}")]
+    ])
+    await update.message.reply_text("Tic Tac Toe game started! Waiting for opponent...", reply_markup=join_button)
+
+async def join_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    data = query.data
+    _, host_id = data.split("_")
+    host_id = int(host_id)
+    joiner_id = query.from_user.id
+    chat_id = query.message.chat.id
+    key = (chat_id, host_id)
 
-    _, chat_id, game_id = query.data.split("_")
-    chat_id = int(chat_id)
-    game_id = int(game_id)
-    game_key = (chat_id, game_id)
-    user = query.from_user
-
-    game = games.get(game_key)
-    if not game or len(game["players"]) >= 2:
-        await query.edit_message_text("This game is full or no longer exists.")
+    if key not in games:
+        await query.edit_message_text("Game not found or already started.")
         return
 
-    if user.id in game["players"]:
-        await query.answer("You already joined.")
+    if games[key]["players"]["O"]:
+        await query.edit_message_text("Game already has two players.")
         return
 
-    game["players"].append(user.id)
-    game["turn"] = game["players"][0]
+    if joiner_id == host_id:
+        await query.answer("You can't join your own game.")
+        return
 
-    await query.edit_message_text(f"{user.first_name} joined the game!\n\nLet's begin:")
-    await send_board(context.bot, chat_id, game_id)
+    games[key]["players"]["O"] = joiner_id
+    await query.edit_message_text("Game started!")
 
-# Board sender
-async def send_board(bot, chat_id, game_id):
-    game_key = (chat_id, game_id)
-    game = games[game_key]
-    board = game["board"]
-    turn = game["turn"]
+    board_markup = render_board(games[key]["board"])
+    await context.bot.send_message(chat_id, f"Game started between X (ID: {host_id}) and O (ID: {joiner_id}). X's turn!", reply_markup=board_markup)
 
-    def symbol(i):
-        return board[i] if board[i] != " " else str(i + 1)
+def check_winner(board):
+    for row in board:
+        if row[0] != "" and row[0] == row[1] == row[2]:
+            return row[0]
+    for col in range(3):
+        if board[0][col] != "" and board[0][col] == board[1][col] == board[2][col]:
+            return board[0][col]
+    if board[0][0] != "" and board[0][0] == board[1][1] == board[2][2]:
+        return board[0][0]
+    if board[0][2] != "" and board[0][2] == board[1][1] == board[2][0]:
+        return board[0][2]
+    return None
 
-    keyboard = [
-        [InlineKeyboardButton(symbol(i), callback_data=f"move_{chat_id}_{game_id}_{i}") for i in row]
-        for row in [(0, 1, 2), (3, 4, 5), (6, 7, 8)]
-    ]
+def is_draw(board):
+    return all(cell != "" for row in board for cell in row)
 
-    await bot.send_message(
-        chat_id=chat_id,
-        text=f"Player {turn}'s turn",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-# Move handler
 async def handle_move(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    data = query.data
+    _, i, j = data.split("_")
+    i, j = int(i), int(j)
 
-    _, chat_id, game_id, cell = query.data.split("_")
-    chat_id = int(chat_id)
-    game_id = int(game_id)
-    cell = int(cell)
-    user = query.from_user
+    chat_id = query.message.chat.id
+    user_id = query.from_user.id
 
-    game_key = (chat_id, game_id)
-    game = games.get(game_key)
-
-    if not game or len(game["players"]) != 2:
+    # Find the game this user belongs to in this chat
+    for key, game in games.items():
+        if key[0] == chat_id and user_id in key:
+            break
+    else:
+        await query.answer("No game found.")
         return
 
-    if user.id != game["turn"]:
-        await query.answer("Not your turn!")
+    board = game["board"]
+    turn = game["turn"]
+    players = game["players"]
+
+    if players[turn] != user_id:
+        await query.answer("It's not your turn.")
         return
 
-    if game["board"][cell] != " ":
-        await query.answer("Cell already taken!")
+    if board[i][j] != "":
+        await query.answer("This cell is already taken.")
         return
 
-    symbol = "X" if user.id == game["players"][0] else "O"
-    game["board"][cell] = symbol
-    game["turn"] = game["players"][1] if game["turn"] == game["players"][0] else game["players"][0]
+    board[i][j] = turn
+    winner = check_winner(board)
 
-    # Check for win
-    b = game["board"]
-    wins = [(0, 1, 2), (3, 4, 5), (6, 7, 8),
-            (0, 3, 6), (1, 4, 7), (2, 5, 8),
-            (0, 4, 8), (2, 4, 6)]
-    for a, b_, c in wins:
-        if game["board"][a] == game["board"][b_] == game["board"][c] != " ":
-            await query.edit_message_text(f"{user.first_name} wins!")
-            del games[game_key]
-            return
-
-    if " " not in game["board"]:
-        await query.edit_message_text("It's a draw!")
-        del games[game_key]
-        return
-
-    await send_board(context.bot, chat_id, game_id)
-
-# MAIN
-async def main():
-    app = Application.builder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("tictactoe", start_game))
-    app.add_handler(CallbackQueryHandler(handle_join, pattern="^join_"))
-    app.add_handler(CallbackQueryHandler(handle_move, pattern="^move_"))
-
-    # Webhook setup
-    await app.bot.set_webhook("https://your-app-name.onrender.com")
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_url="https://your-app-name.onrender.com"
-    )
+    if winner:
+        markup = render_board(board)
+        await query.edit_message_text(f"Player {turn} wins!", reply_markup=markup)
+        del games[key]
+    elif is_draw(board):
+        markup = render_board(board)
+        await query.edit_message_text("It's a draw!", reply_markup=markup)
+        del games[key]
+    else:
+        game["turn"] = "O" if turn == "X" else "X"
+        markup = render_board(board)
+        await query.edit_message_text(f"{game['turn']}'s turn", reply_markup=markup)
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("tictactoe", tictactoe))
+    app.add_handler(CallbackQueryHandler(join_game, pattern="^join_"))
+    app.add_handler(CallbackQueryHandler(handle_move, pattern="^move_"))
+    app.run_polling()

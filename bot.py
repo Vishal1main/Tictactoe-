@@ -7,7 +7,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-TOKEN = os.getenv("7666132298:AAGKkh3e9j1dcGniY_0tiOiiUtRYJi10fQg")
+TOKEN = os.getenv("YOUR_BOT_TOKEN")
 
 games = {}  # Stores ongoing games: {(chat_id, player1_id, player2_id): board}
 

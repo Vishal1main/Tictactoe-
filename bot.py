@@ -1,110 +1,109 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from collections import defaultdict
+import os
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
 
-# Store games as (chat_id, user_id) => game data
-games = {}
+TOKEN = os.getenv("7666132298:AAGKkh3e9j1dcGniY_0tiOiiUtRYJi10fQg")
 
-# Start a personal game
+games = {}  # Stores ongoing games: {(chat_id, player1_id, player2_id): board}
+
+def create_keyboard(board, chat_id, player1, player2):
+    keyboard = []
+    for i in range(0, 9, 3):
+        row = [
+            InlineKeyboardButton(board[i+j] or ' ', callback_data=f"{chat_id}:{player1}:{player2}:move_{i+j}")
+            for j in range(3)
+        ]
+        keyboard.append(row)
+    return InlineKeyboardMarkup(keyboard)
+
+def check_winner(board):
+    wins = [(0,1,2), (3,4,5), (6,7,8),
+            (0,3,6), (1,4,7), (2,5,8),
+            (0,4,8), (2,4,6)]
+    for a,b,c in wins:
+        if board[a] and board[a] == board[b] == board[c]:
+            return board[a]
+    if all(board):
+        return "Draw"
+    return None
+
 async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    key = (chat_id, user_id)
+    message = await update.message.reply_text("Waiting for second player to join... (Click the button below)",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Join Game", callback_data=f"{chat_id}:{user_id}:join")]
+        ])
+    )
 
-    if key in games:
-        await update.message.reply_text("Aapka ek game already chal raha hai. Pehle usse complete karein.")
+async def join_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data.split(":")
+    chat_id, player1 = int(data[0]), int(data[1])
+    player2 = query.from_user.id
+
+    if player1 == player2:
+        await query.edit_message_text("You can't play with yourself.")
         return
 
-    games[key] = {
-        "board": [" "] * 9,
-        "turn": "X",
-    }
-    await update.message.reply_text(
-        f"{update.effective_user.first_name}, aapka Tic Tac Toe game start ho gaya hai!",
-    )
-    await send_board(chat_id, user_id, context)
+    board = [None] * 9
+    games[(chat_id, player1, player2)] = {"board": board, "turn": player1}
+    keyboard = create_keyboard(board, chat_id, player1, player2)
+    await query.edit_message_text(f"Game started!\nPlayer 1: {player1}\nPlayer 2: {player2}\nPlayer {player1}'s turn (X)",
+                                  reply_markup=keyboard)
 
-# Show board to user
-async def send_board(chat_id, user_id, context):
-    game = games[(chat_id, user_id)]
-    board = game["board"]
-    keyboard = []
-
-    for i in range(0, 9, 3):
-        row = []
-        for j in range(3):
-            idx = i + j
-            mark = board[idx] if board[idx] != " " else str(idx + 1)
-            row.append(InlineKeyboardButton(mark, callback_data=f"{chat_id}:{user_id}:move_{idx}"))
-        keyboard.append(row)
-
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"Player {game['turn']} ki baari (Only for you):",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-# Handle moves
 async def handle_move(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    try:
-        chat_id, user_id, move_str = query.data.split(":")
-        chat_id = int(chat_id)
-        user_id = int(user_id)
-        move_index = int(move_str.split("_")[1])
-    except:
+    data = query.data.split(":")
+    chat_id = int(data[0])
+    player1 = int(data[1])
+    player2 = int(data[2])
+    move_index = int(data[3].split("_")[1])
+
+    key = (chat_id, player1, player2)
+    reverse_key = (chat_id, player2, player1)
+    game = games.get(key) or games.get(reverse_key)
+
+    if not game:
+        await query.edit_message_text("Game not found or expired.")
         return
 
-    if query.from_user.id != user_id:
-        await query.answer("Yeh aapka game nahi hai.")
+    user_id = query.from_user.id
+    if user_id != game["turn"]:
+        await query.answer("Not your turn!", show_alert=True)
         return
 
-    key = (chat_id, user_id)
-    if key not in games:
-        await query.answer("Koi active game nahi mila.")
+    if game["board"][move_index] is not None:
+        await query.answer("Invalid move!", show_alert=True)
         return
 
-    game = games[key]
-
-    if game["board"][move_index] != " ":
-        await query.answer("Yeh jagah already bhari hai.")
-        return
-
-    game["board"][move_index] = game["turn"]
+    symbol = 'X' if user_id == player1 else 'O'
+    game["board"][move_index] = symbol
+    game["turn"] = player2 if user_id == player1 else player1
 
     winner = check_winner(game["board"])
     if winner:
-        await query.edit_message_text(f"Player {winner} jeet gaya! Game over.")
-        del games[key]
-    elif " " not in game["board"]:
-        await query.edit_message_text("Game draw ho gaya!")
-        del games[key]
+        text = f"Game Over! Winner: {winner}" if winner != "Draw" else "Game Draw!"
+        await query.edit_message_text(text)
+        games.pop(key, None)
+        games.pop(reverse_key, None)
     else:
-        game["turn"] = "O" if game["turn"] == "X" else "X"
-        await query.delete_message()
-        await send_board(chat_id, user_id, context)
-
-# Check win
-def check_winner(board):
-    win_positions = [(0,1,2), (3,4,5), (6,7,8),
-                     (0,3,6), (1,4,7), (2,5,8),
-                     (0,4,8), (2,4,6)]
-    for i, j, k in win_positions:
-        if board[i] == board[j] == board[k] and board[i] != " ":
-            return board[i]
-    return None
-
-# Main
-async def main():
-    app = Application.builder().token("7666132298:AAGKkh3e9j1dcGniY_0tiOiiUtRYJi10fQg").build()
-
-    app.add_handler(CommandHandler("tictactoe", start_game))
-    app.add_handler(CallbackQueryHandler(handle_move, pattern=r"^\d+:\d+:move_\d$"))
-
-    await app.run_polling()
+        keyboard = create_keyboard(game["board"], chat_id, player1, player2)
+        await query.edit_message_text(f"Player {game['turn']}'s turn ({'X' if game['turn']==player1 else 'O'})",
+                                      reply_markup=keyboard)
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("tictactoe", start_game))
+    app.add_handler(CallbackQueryHandler(join_game, pattern=r"^\d+:\d+:join$"))
+    app.add_handler(CallbackQueryHandler(handle_move, pattern=r"^\d+:\d+:\d+:move_\d$"))
+
+    app.run_polling()

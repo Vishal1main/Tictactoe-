@@ -318,37 +318,38 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def run_bot():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token:
-        raise ValueError("TELEGRAM_BOT_TOKEN not set")
-
     app = Application.builder().token(token).build()
     
-    # Add handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("play", play))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CallbackQueryHandler(button_click))
-    app.add_error_handler(error_handler)
+    # ... (अपने सभी Handlers यहाँ जोड़ें)
 
-    # Webhook configuration for Render
     port = int(os.getenv("PORT", 10000))
     webhook_url = os.getenv("WEBHOOK_URL")
-    if not webhook_url:
-        raise ValueError("WEBHOOK_URL not set")
-    
-    await app.initialize()
-    await app.start()
-    await app.updater.start_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=token,
-        webhook_url=f"{webhook_url}/{token}",
-        drop_pending_updates=True
-    )
-    
-    # Keep the application running
-    while True:
-        await asyncio.sleep(3600)
 
-if __name__ == "__main__":
-    asyncio.run(run_bot())
+    try:
+        await app.initialize()
+        await app.start()
+        
+        # मैन्युअली Webhook सेट करें
+        await app.bot.set_webhook(
+            url=f"{webhook_url}/{token}",
+            drop_pending_updates=True
+        )
+        
+        # Webhook सर्वर शुरू करें
+        await app.updater.start_webhook(
+            listen="0.0.0.0",
+            port=port,
+            webhook_url=f"{webhook_url}/{token}",
+            url_path=token,
+        )
+        
+        logger.info(f"✅ Bot सफलतापूर्वक {port} पर चल रहा है!")
+        
+        # Render को पोर्ट एक्टिविटी दिखाने के लिए
+        async with app:
+            while True:
+                await asyncio.sleep(3600)
+                
+    except Exception as e:
+        logger.error(f"❌ Error: {e}")
+        raise

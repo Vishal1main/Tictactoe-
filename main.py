@@ -238,14 +238,23 @@ def main() -> None:
     # Add error handler
     application.add_error_handler(error_handler)
     
-    # Start the bot
-    port = int(os.environ.get("PORT", 8443))
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=token,
-        webhook_url=f"https://your-render-app-name.onrender.com/{token}"
-    )
+    # Determine run mode
+    if os.getenv("DOCKER_MODE") == "1":
+        # Webhook mode for Docker deployment
+        port = int(os.environ.get("PORT", 8443))
+        webhook_url = os.getenv("WEBHOOK_URL")
+        if not webhook_url:
+            raise ValueError("WEBHOOK_URL environment variable not set for Docker mode")
+            
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=token,
+            webhook_url=f"{webhook_url}/{token}"
+        )
+    else:
+        # Polling mode for local development
+        application.run_polling()
 
 if __name__ == "__main__":
     main()

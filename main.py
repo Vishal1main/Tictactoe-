@@ -330,43 +330,25 @@ async def run_bot():
     app.add_handler(CallbackQueryHandler(button_click))
     app.add_error_handler(error_handler)
 
-    # Run bot
-    if os.getenv("DOCKER_MODE") == "1":
-        port = int(os.getenv("PORT", 8443))
-        webhook_url = os.getenv("WEBHOOK_URL")
-        if not webhook_url:
-            raise ValueError("WEBHOOK_URL not set")
-        
-        await app.initialize()
-        await app.start()
-        await app.updater.start_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path=token,
-            webhook_url=f"{webhook_url}/{token}",
-            drop_pending_updates=True
-        )
-    else:
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
+    # Webhook configuration for Render
+    port = int(os.getenv("PORT", 10000))
+    webhook_url = os.getenv("WEBHOOK_URL")
+    if not webhook_url:
+        raise ValueError("WEBHOOK_URL not set")
     
-    # Run forever
+    await app.initialize()
+    await app.start()
+    await app.updater.start_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=token,
+        webhook_url=f"{webhook_url}/{token}",
+        drop_pending_updates=True
+    )
+    
+    # Keep the application running
     while True:
-        await asyncio.sleep(3600)  # Sleep for 1 hour
-
-    # Proper shutdown (though we may never reach this)
-    await app.updater.stop()
-    await app.stop()
-    await app.shutdown()
-
-def main():
-    try:
-        asyncio.run(run_bot())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(run_bot())

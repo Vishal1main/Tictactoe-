@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  tic-tac-toe-bot:
+    build: .
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - DOCKER_MODE=1
+      - WEBHOOK_URL=https://your-domain.com
+    ports:
+      - "8443:8443"
+    restart: unless-stopped

@@ -1,6 +1,7 @@
 import logging
 import os
 import random
+import asyncio
 from typing import Dict, List, Tuple
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -10,6 +11,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
 )
+from telegram.error import Conflict
 
 # Setup logging
 logging.basicConfig(
@@ -315,7 +317,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except:
             pass
 
-def main() -> None:
+async def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN not set")
@@ -336,15 +338,29 @@ def main() -> None:
         if not webhook_url:
             raise ValueError("WEBHOOK_URL not set")
         
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path=token,
-            webhook_url=f"{webhook_url}/{token}",
-            drop_pending_updates=True
-        )
+        try:
+            # Clear any existing webhook first
+            await app.bot.delete_webhook()
+            
+            # Set up webhook
+            await app.run_webhook(
+                listen="0.0.0.0",
+                port=port,
+                url_path=token,
+                webhook_url=f"{webhook_url}/{token}",
+                drop_pending_updates=True
+            )
+        except Conflict:
+            logger.error("Another bot instance is running. Shutting down...")
+        except Exception as e:
+            logger.error(f"Webhook failed: {e}")
+            # Fallback to polling
+            await app.run_polling(drop_pending_updates=True)
     else:
-        app.run_polling(drop_pending_updates=True)
+        try:
+            await app.run_polling(drop_pending_updates=True)
+        except Conflict:
+            logger.error("Another bot instance is already running")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

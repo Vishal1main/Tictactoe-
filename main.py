@@ -11,7 +11,6 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
 )
-from telegram.error import Conflict
 
 # Setup logging
 logging.basicConfig(
@@ -26,9 +25,9 @@ X = "X"
 O = "O"
 
 # Game state storage
-games = {}  # {(chat_id, game_id): game_data}
-invitations = {}  # {chat_id: {'message_id': int, 'host': int, 'game_id': str}}
-player_games = {}  # {user_id: (chat_id, game_id)}
+games = {}
+invitations = {}
+player_games = {}
 
 class TicTacToeGame:
     def __init__(self, player1: int, player2: int, game_id: str):
@@ -123,7 +122,7 @@ async def play(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer()  # Always answer first
+    await query.answer()
     
     try:
         chat_id = query.message.chat_id
@@ -317,7 +316,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except:
             pass
 
-async def main():
+async def run_bot():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN not set")
@@ -338,29 +337,36 @@ async def main():
         if not webhook_url:
             raise ValueError("WEBHOOK_URL not set")
         
-        try:
-            # Clear any existing webhook first
-            await app.bot.delete_webhook()
-            
-            # Set up webhook
-            await app.run_webhook(
-                listen="0.0.0.0",
-                port=port,
-                url_path=token,
-                webhook_url=f"{webhook_url}/{token}",
-                drop_pending_updates=True
-            )
-        except Conflict:
-            logger.error("Another bot instance is running. Shutting down...")
-        except Exception as e:
-            logger.error(f"Webhook failed: {e}")
-            # Fallback to polling
-            await app.run_polling(drop_pending_updates=True)
+        await app.initialize()
+        await app.start()
+        await app.updater.start_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=token,
+            webhook_url=f"{webhook_url}/{token}",
+            drop_pending_updates=True
+        )
     else:
-        try:
-            await app.run_polling(drop_pending_updates=True)
-        except Conflict:
-            logger.error("Another bot instance is already running")
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(drop_pending_updates=True)
+    
+    # Run forever
+    while True:
+        await asyncio.sleep(3600)  # Sleep for 1 hour
+
+    # Proper shutdown (though we may never reach this)
+    await app.updater.stop()
+    await app.stop()
+    await app.shutdown()
+
+def main():
+    try:
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

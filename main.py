@@ -23,8 +23,8 @@ O = "O"
 
 # Store active games: {chat_id: game_data}
 games = {}
-# Store player queues: {chat_id: [user_ids]}
-queues = {}
+# Store game invitations: {chat_id: {'message_id': int, 'host': int}}
+invitations = {}
 
 class TicTacToeGame:
     def __init__(self, player1: int, player2: int):
@@ -67,78 +67,89 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Hi! I'm a Tic Tac Toe bot. Use /play to start a game in this group!")
 
 async def play(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Add user to the game queue or start a game if possible."""
+    """Create a game invitation."""
     chat_id = update.message.chat_id
     user_id = update.message.from_user.id
-    
-    if chat_id not in queues:
-        queues[chat_id] = []
-    
-    # Check if user is already in queue
-    if user_id in queues[chat_id]:
-        await update.message.reply_text("You're already in the queue. Please wait for an opponent.")
-        return
-    
+    username = update.message.from_user.username or update.message.from_user.first_name
+
     # Check if user is already in a game
     if chat_id in games and (user_id == games[chat_id].players[X] or user_id == games[chat_id].players[O]):
         await update.message.reply_text("You're already in a game! Use the surrender button below the game to exit.")
         return
-    
-    # Add to queue
-    queues[chat_id].append(user_id)
-    await update.message.reply_text("You've been added to the queue. Waiting for an opponent...")
-    
-    # Start game if we have 2 players
-    if len(queues[chat_id]) >= 2:
-        player1 = queues[chat_id].pop(0)
-        player2 = queues[chat_id].pop(0)
-        
-        games[chat_id] = TicTacToeGame(player1, player2)
-        
-        # Notify players
-        player1_name = (await context.bot.get_chat_member(chat_id, player1)).user.mention_html()
-        player2_name = (await context.bot.get_chat_member(chat_id, player2)).user.mention_html()
-        
-        message = await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"Game started!\n\n{X}: {player1_name}\n{O}: {player2_name}\n\nIt's {X}'s turn!",
-            reply_markup=create_game_markup(games[chat_id].board),
-        )
-        
-        games[chat_id].message_id = message.message_id
 
-def create_game_markup(board: List[str]) -> InlineKeyboardMarkup:
-    """Create an inline keyboard markup for the current board state with surrender button."""
-    keyboard = []
-    
-    for i in range(0, 9, 3):
-        row = []
-        for j in range(3):
-            position = i + j
-            row.append(InlineKeyboardButton(board[position], callback_data=f"move_{position}"))
-        keyboard.append(row)
-    
-    # Add surrender button row
-    keyboard.append([InlineKeyboardButton("🚩 Surrender", callback_data="surrender")])
-    
-    return InlineKeyboardMarkup(keyboard)
+    # Create invitation
+    keyboard = [
+        [InlineKeyboardButton("🎮 Join Game", callback_data=f"join_{user_id}")],
+        [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_{user_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    message = await update.message.reply_text(
+        f"🎲 {username} wants to play Tic Tac Toe!\n\nClick 'Join Game' to play against them!",
+        reply_markup=reply_markup
+    )
+
+    invitations[chat_id] = {
+        'message_id': message.message_id,
+        'host': user_id
+    }
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle button clicks (player moves and surrender)."""
+    """Handle button clicks (join game, cancel, moves, surrender)."""
     query = update.callback_query
     await query.answer()
     
     chat_id = query.message.chat_id
     user_id = query.from_user.id
+    data = query.data
+
+    # Handle game invitations
+    if data.startswith("join_"):
+        host_id = int(data.split("_")[1])
+        
+        if chat_id not in invitations or invitations[chat_id]['host'] != host_id:
+            await query.answer("This invitation is no longer valid.", show_alert=True)
+            return
+            
+        if user_id == host_id:
+            await query.answer("You can't play against yourself!", show_alert=True)
+            return
+            
+        # Remove invitation
+        del invitations[chat_id]
+        
+        # Create game
+        games[chat_id] = TicTacToeGame(host_id, user_id)
+        
+        # Get player names
+        host_name = (await context.bot.get_chat_member(chat_id, host_id)).user.mention_html()
+        player_name = (await context.bot.get_chat_member(chat_id, user_id)).user.mention_html()
+        
+        # Edit original message to show game started
+        await query.edit_message_text(
+            text=f"Game started!\n\n{X}: {host_name}\n{O}: {player_name}\n\nIt's {X}'s turn!",
+            reply_markup=create_game_markup(games[chat_id].board)
+        )
+        
+        games[chat_id].message_id = query.message.message_id
+        return
     
+    elif data.startswith("cancel_"):
+        host_id = int(data.split("_")[1])
+        
+        if chat_id in invitations and invitations[chat_id]['host'] == host_id and user_id == host_id:
+            del invitations[chat_id]
+            await query.edit_message_text("Game invitation cancelled.")
+            return
+    
+    # Handle game moves if we're not in an invitation
     if chat_id not in games:
-        await query.edit_message_text(text="This game has already ended.")
         return
     
     game = games[chat_id]
     
     # Handle surrender
-    if query.data == "surrender":
+    if data == "surrender":
         if user_id not in game.players.values():
             await query.answer("You're not in this game!", show_alert=True)
             return
@@ -158,9 +169,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     # Handle move
     try:
-        position = int(query.data.split("_")[1])
+        position = int(data.split("_")[1])
     except (IndexError, ValueError):
-        logger.error(f"Invalid callback data: {query.data}")
+        logger.error(f"Invalid callback data: {data}")
         return
     
     # Check if it's the user's turn
@@ -199,18 +210,34 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         logger.error(f"Error editing message: {e}")
 
+def create_game_markup(board: List[str]) -> InlineKeyboardMarkup:
+    """Create an inline keyboard markup for the current board state with surrender button."""
+    keyboard = []
+    
+    for i in range(0, 9, 3):
+        row = []
+        for j in range(3):
+            position = i + j
+            row.append(InlineKeyboardButton(board[position], callback_data=f"move_{position}"))
+        keyboard.append(row)
+    
+    # Add surrender button row
+    keyboard.append([InlineKeyboardButton("🚩 Surrender", callback_data="surrender")])
+    
+    return InlineKeyboardMarkup(keyboard)
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /help is issued."""
     help_text = """
     🎮 Tic Tac Toe Bot Commands:
     
-    /play - Join the queue to play a game
+    /play - Create a game invitation
     /help - Show this help message
     
     How to play:
-    1. Use /play to join the queue
-    2. When another player joins, the game starts
-    3. Click on the board to make your move
+    1. Use /play to create a game invitation
+    2. Another player clicks "Join Game" on your invitation
+    3. Players take turns clicking the board
     4. First to get 3 in a row wins!
     5. Click 🚩 Surrender to quit the game
     """

@@ -71,7 +71,10 @@ class TicTacToeGame:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
-    await update.message.reply_text("Hi! I'm a Tic Tac Toe bot. Use /play to start a game in this group!")
+    await update.message.reply_text(
+        "Hi! I'm a Tic Tac Toe bot. Use /play to start a game in this group!",
+        parse_mode='HTML'
+    )
 
 async def play(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Create a game invitation."""
@@ -84,7 +87,8 @@ async def play(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id_existing, game_id = player_games[user_id]
         if (chat_id_existing, game_id) in games:
             await update.message.reply_text(
-                "You're already in a game! Use the surrender button below the game to exit."
+                "<b>⚠️ You're already in a game!</b>\n\nUse the surrender button below the game to exit.",
+                parse_mode='HTML'
             )
             return
 
@@ -99,9 +103,10 @@ async def play(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     message = await update.message.reply_text(
-        f"🎲 {username} wants to play Tic Tac Toe! (Game ID: {game_id})\n\n"
-        "Click 'Join Game' to play against them!",
-        reply_markup=reply_markup
+        f"<b>🎲 {escape_html(username)} wants to play Tic Tac Toe!</b> (Game ID: <code>{game_id}</code>)\n\n"
+        "Click <b>Join Game</b> to play against them!",
+        reply_markup=reply_markup,
+        parse_mode='HTML'
     )
 
     invitations[chat_id] = {
@@ -110,8 +115,12 @@ async def play(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         'game_id': game_id
     }
 
+def escape_html(text: str) -> str:
+    """Escape HTML special characters."""
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle button clicks (join game, cancel, moves, surrender)."""
+    """Handle button clicks with proper HTML formatted alerts."""
     query = update.callback_query
     await query.answer()
     
@@ -129,15 +138,27 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         game_id = parts[2]
         
         if chat_id not in invitations or invitations[chat_id]['game_id'] != game_id:
-            await query.answer("This invitation is no longer valid.", show_alert=True)
+            await query.answer(
+                text="<b>⚠️ Game Not Found!</b>\nThis invitation is no longer valid.",
+                show_alert=True,
+                parse_mode='HTML'
+            )
             return
             
         if user_id == host_id:
-            await query.answer("You can't play against yourself!", show_alert=True)
+            await query.answer(
+                text="<b>🤦 You can't play against yourself!</b>",
+                show_alert=True,
+                parse_mode='HTML'
+            )
             return
             
         if user_id in player_games:
-            await query.answer("You're already in another game!", show_alert=True)
+            await query.answer(
+                text="<b>⚠️ You're already in another game!</b>",
+                show_alert=True,
+                parse_mode='HTML'
+            )
             return
             
         # Remove invitation
@@ -152,13 +173,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         player_games[user_id] = (chat_id, game_id)
         
         # Get player names
-        host_name = (await context.bot.get_chat_member(chat_id, host_id)).user.mention_html()
-        player_name = (await context.bot.get_chat_member(chat_id, user_id)).user.mention_html()
+        host_name = escape_html((await context.bot.get_chat_member(chat_id, host_id)).user.first_name)
+        player_name = escape_html((await context.bot.get_chat_member(chat_id, user_id)).user.first_name)
         
         # Edit original message to show game started
         await query.edit_message_text(
-            text=f"Game {game_id} started!\n\n{X}: {host_name}\n{O}: {player_name}\n\nIt's {X}'s turn!",
-            reply_markup=create_game_markup(games[game_key].board, game_id)
+            text=f"<b>Game {game_id} started!</b>\n\n<b>{X}:</b> {host_name}\n<b>{O}:</b> {player_name}\n\nIt's <b>{X}'s</b> turn!",
+            reply_markup=create_game_markup(games[game_key].board, game_id),
+            parse_mode='HTML'
         )
         
         games[game_key].message_id = query.message.message_id
@@ -178,7 +200,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             invitations[chat_id]['game_id'] == game_id):
             
             del invitations[chat_id]
-            await query.edit_message_text("Game invitation cancelled.")
+            await query.edit_message_text(
+                "<b>❌ Game invitation cancelled.</b>",
+                parse_mode='HTML'
+            )
             return
     
     # Handle game moves
@@ -191,21 +216,34 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         game_key = (chat_id, game_id)
         
         if game_key not in games:
-            await query.answer("Game not found!", show_alert=True)
+            await query.answer(
+                text="<b>⚠️ Game Not Found!</b>\nThis game has already ended.",
+                show_alert=True,
+                parse_mode='HTML'
+            )
             return
             
         game = games[game_key]
         
-        # Check if it's the user's turn
+        # Check if it's the user's turn with HTML formatted alert
         if user_id != game.players[game.current_player]:
-            await query.answer("It's not your turn!", show_alert=True)
+            current_player_name = escape_html((await context.bot.get_chat_member(chat_id, game.players[game.current_player])).user.first_name)
+            await query.answer(
+                text=f"<b>⏳ Not Your Turn!</b>\n\nIt's <i>{current_player_name}'s</i> turn right now.",
+                show_alert=True,
+                parse_mode='HTML'
+            )
             return
         
         # Make move
         try:
             position = int(parts[1])
             if not game.make_move(position):
-                await query.answer("Invalid move!", show_alert=True)
+                await query.answer(
+                    text="<b>❌ Invalid Move!</b>\n\nPlease select an empty square.",
+                    show_alert=True,
+                    parse_mode='HTML'
+                )
                 return
         except (IndexError, ValueError):
             logger.error(f"Invalid callback data: {data}")
@@ -221,18 +259,26 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         game_key = (chat_id, game_id)
         
         if game_key not in games:
-            await query.answer("Game not found!", show_alert=True)
+            await query.answer(
+                text="<b>⚠️ Game Not Found!</b>\nThis game has already ended.",
+                show_alert=True,
+                parse_mode='HTML'
+            )
             return
             
         game = games[game_key]
         
         if user_id not in game.players.values():
-            await query.answer("You're not in this game!", show_alert=True)
+            await query.answer(
+                text="<b>🚫 Access Denied!</b>\n\nYou're not part of this game.",
+                show_alert=True,
+                parse_mode='HTML'
+            )
             return
             
         # Determine winner
         winner_id = game.players[O] if user_id == game.players[X] else game.players[X]
-        winner_name = (await context.bot.get_chat_member(chat_id, winner_id)).user.mention_html()
+        winner_name = escape_html((await context.bot.get_chat_member(chat_id, winner_id)).user.first_name)
         
         # Clean up
         del games[game_key]
@@ -242,8 +288,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             del player_games[winner_id]
         
         await query.edit_message_text(
-            text=f"Game {game_id} surrendered! {winner_name} wins by default!",
-            reply_markup=None
+            text=f"<b>🏳️ Game {game_id} surrendered!</b>\n\n<b>🎉 Winner:</b> {winner_name}",
+            reply_markup=None,
+            parse_mode='HTML'
         )
 
 async def update_game_message(chat_id: int, game_id: str, query, context):
@@ -255,12 +302,14 @@ async def update_game_message(chat_id: int, game_id: str, query, context):
     game = games[game_key]
     
     # Get player names
-    player1_name = (await context.bot.get_chat_member(chat_id, game.players[X])).user.mention_html()
-    player2_name = (await context.bot.get_chat_member(chat_id, game.players[O])).user.mention_html()
+    player1_name = escape_html((await context.bot.get_chat_member(chat_id, game.players[X])).user.first_name)
+    player2_name = escape_html((await context.bot.get_chat_member(chat_id, game.players[O])).user.first_name)
     
     if game.winner:
         winner_name = player1_name if game.winner == X else player2_name
-        text = f"Game {game_id} over!\n\n{X}: {player1_name}\n{O}: {player2_name}\n\nWinner: {winner_name}!"
+        text = (f"<b>🏆 Game {game_id} over!</b>\n\n"
+               f"<b>{X}:</b> {player1_name}\n<b>{O}:</b> {player2_name}\n\n"
+               f"<b>🎉 Winner:</b> {winner_name}!")
         
         # Clean up
         del games[game_key]
@@ -271,7 +320,9 @@ async def update_game_message(chat_id: int, game_id: str, query, context):
             
         markup = None
     elif game.draw:
-        text = f"Game {game_id} over!\n\n{X}: {player1_name}\n{O}: {player2_name}\n\nIt's a draw!"
+        text = (f"<b>🤝 Game {game_id} over!</b>\n\n"
+               f"<b>{X}:</b> {player1_name}\n<b>{O}:</b> {player2_name}\n\n"
+               f"<b>It's a draw!</b>")
         
         # Clean up
         del games[game_key]
@@ -283,14 +334,16 @@ async def update_game_message(chat_id: int, game_id: str, query, context):
         markup = None
     else:
         current_player_name = player1_name if game.current_player == X else player2_name
-        text = (f"Game {game_id} in progress!\n\n{X}: {player1_name}\n{O}: {player2_name}\n\n"
-               f"It's {game.current_player}'s turn ({current_player_name})!")
+        text = (f"<b>🎮 Game {game_id} in progress!</b>\n\n"
+               f"<b>{X}:</b> {player1_name}\n<b>{O}:</b> {player2_name}\n\n"
+               f"It's <b>{game.current_player}'s</b> turn (<i>{current_player_name}</i>)!")
         markup = create_game_markup(game.board, game_id)
     
     try:
         await query.edit_message_text(
             text=text,
             reply_markup=markup,
+            parse_mode='HTML'
         )
     except Exception as e:
         logger.error(f"Error editing message: {e}")
@@ -314,21 +367,21 @@ def create_game_markup(board: List[str], game_id: str) -> InlineKeyboardMarkup:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /help is issued."""
     help_text = """
-    🎮 Tic Tac Toe Bot Commands:
-    
-    /play - Create a game invitation
-    /help - Show this help message
-    
-    How to play:
-    1. Use /play to create a game invitation
-    2. Another player clicks "Join Game" on your invitation
-    3. Players take turns clicking the board
-    4. First to get 3 in a row wins!
-    5. Click 🚩 Surrender to quit the game
-    
-    Each game has a unique ID to handle multiple games.
-    """
-    await update.message.reply_text(help_text)
+<b>🎮 Tic Tac Toe Bot Commands:</b>
+
+<code>/play</code> - Create a game invitation
+<code>/help</code> - Show this help message
+
+<b>How to play:</b>
+1. Use <code>/play</code> to create a game invitation
+2. Another player clicks "Join Game" on your invitation
+3. Players take turns clicking the board
+4. First to get 3 in a row wins!
+5. Click 🚩 <b>Surrender</b> to quit the game
+
+Each game has a unique ID to handle multiple games.
+"""
+    await update.message.reply_text(help_text, parse_mode='HTML')
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log errors."""
@@ -360,12 +413,19 @@ def main() -> None:
         if not webhook_url:
             raise ValueError("WEBHOOK_URL environment variable not set for Docker mode")
             
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path=token,
-            webhook_url=f"{webhook_url}/{token}"
-        )
+        # Set up webhook with error handling
+        try:
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=port,
+                url_path=token,
+                webhook_url=f"{webhook_url}/{token}",
+                drop_pending_updates=True
+            )
+        except Exception as e:
+            logger.error(f"Webhook setup failed: {e}")
+            # Fallback to polling if webhook fails
+            application.run_polling()
     else:
         # Polling mode for local development
         application.run_polling()

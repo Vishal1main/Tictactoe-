@@ -5,27 +5,13 @@
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
-    "dev": "nodemon bot.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "nodemon bot.js"
   },
-  "keywords": [
-    "telegram",
-    "bot",
-    "game",
-    "tic-tac-toe",
-    "multiplayer"
-  ],
-  "author": "Your Name",
-  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
-    "node-telegram-bot-api": "^0.61.0",
-    "node-telegram-keyboard-wrapper": "^1.1.0"
+    "node-telegram-bot-api": "^0.61.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
-  },
-  "engines": {
-    "node": ">=14.0.0"
   }
 }

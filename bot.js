@@ -1,7 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 
-const token = process.env.TELEGRAM_BOT_TOKEN || 'YOUR_BOT_TOKEN';
+const token = process.env.TELEGRAM_BOT_TOKEN || 'YOUR_TELEGRAM_BOT_TOKEN';
 const port = process.env.PORT || 3000;
 
 const app = express();
@@ -10,23 +10,46 @@ const bot = new TelegramBot(token, { polling: true });
 app.get('/', (req, res) => res.send('Tic Tac Toe Bot is running!'));
 app.listen(port, () => console.log(`Server running on port ${port}`));
 
-// Game storage
-const activeGames = {};
-const waitingGames = {};
-const playerGames = {};
+// Game data storage
+const games = {};          // { gameId: gameData }
+const playerGames = {};    // { playerId: gameId }
+const waitingPlayers = {}; // { chatId: playerId }
 
-// Generate random game ID
+// Generate a random game ID
 function generateGameId() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    return Array(6).fill(0).map(() => chars[Math.floor(Math.random() * chars.length)]).join('');
+    let result = '';
+    for (let i = 0; i < 6; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
 }
 
-// Create new game board
-function createNewBoard() {
-    return Array(9).fill(null);
+// Initialize a new game
+function initGame(chatId, player1Id, player2Id = null) {
+    const gameId = generateGameId();
+    const isSinglePlayer = player2Id === null;
+    
+    games[gameId] = {
+        chatId,
+        board: Array(9).fill(null),
+        players: {
+            X: player1Id,
+            O: isSinglePlayer ? 'AI' : player2Id
+        },
+        currentPlayer: 'X',
+        isGameActive: true,
+        isSinglePlayer,
+        messageId: null
+    };
+    
+    playerGames[player1Id] = gameId;
+    if (!isSinglePlayer) playerGames[player2Id] = gameId;
+    
+    return gameId;
 }
 
-// Check for winner
+// Check for winner or draw
 function checkWinner(board) {
     const winPatterns = [
         [0, 1, 2], [3, 4, 5], [6, 7, 8], // rows
@@ -34,51 +57,106 @@ function checkWinner(board) {
         [0, 4, 8], [2, 4, 6]             // diagonals
     ];
 
-    for (const [a, b, c] of winPatterns) {
+    for (const pattern of winPatterns) {
+        const [a, b, c] = pattern;
         if (board[a] && board[a] === board[b] && board[a] === board[c]) {
             return board[a];
         }
     }
+
     return board.includes(null) ? null : 'draw';
 }
 
-// Generate game keyboard
-function generateKeyboard(board, gameId) {
+// Generate game board keyboard with game info
+function generateBoard(gameId) {
+    const game = games[gameId];
     const keyboard = {
         inline_keyboard: []
     };
 
     // Create 3x3 grid
-    for (let i = 0; i < 9; i += 3) {
-        const row = board.slice(i, i + 3).map((cell, index) => ({
-            text: cell || ' ',
-            callback_data: `${gameId}_${i + index}`
-        }));
-        keyboard.inline_keyboard.push(row);
+    for (let row = 0; row < 3; row++) {
+        const rowButtons = [];
+        for (let col = 0; col < 3; col++) {
+            const index = row * 3 + col;
+            rowButtons.push({
+                text: game.board[index] || ' ',
+                callback_data: `${gameId}_${index}`
+            });
+        }
+        keyboard.inline_keyboard.push(rowButtons);
     }
 
-    // Add surrender button
+    // Add restart button
     keyboard.inline_keyboard.push([{
-        text: '🏳️ Surrender',
-        callback_data: `${gameId}_surrender`
+        text: 'Restart Game',
+        callback_data: `${gameId}_restart`
     }]);
 
     return keyboard;
 }
 
-// Handle /start and /play
-bot.onText(/\/start|\/play/, (msg) => {
+// Get player display name
+async function getPlayerName(playerId) {
+    try {
+        if (playerId === 'AI') return 'AI';
+        const user = await bot.getChatMember(playerId, playerId);
+        return user.user.first_name + (user.user.last_name ? ' ' + user.user.last_name : '');
+    } catch {
+        return 'Player';
+    }
+}
+
+// Update game message with current status
+async function updateGameMessage(gameId) {
+    const game = games[gameId];
+    if (!game || !game.messageId) return;
+
+    const playerXName = await getPlayerName(game.players.X);
+    const playerOName = await getPlayerName(game.players.O);
+    const currentPlayerName = game.currentPlayer === 'X' ? playerXName : playerOName;
+
+    const gameInfo = `🎮 Game ${gameId}\n\nX: ${playerXName}\nO: ${playerOName}\n\nIt's ${game.currentPlayer}'s turn (${currentPlayerName})`;
+
+    const keyboard = generateBoard(gameId);
+
+    try {
+        await bot.editMessageText(gameInfo, {
+            chat_id: game.chatId,
+            message_id: game.messageId,
+            reply_markup: keyboard
+        });
+    } catch (error) {
+        console.error('Error updating game message:', error);
+    }
+}
+
+// Handle /start command
+bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
-    const username = msg.from.username || 'Player';
-    
     const menu = {
         inline_keyboard: [
-            [{ text: '🤖 Single Player', callback_data: 'single' }],
-            [{ text: '👥 Multiplayer', callback_data: 'multiplayer' }]
+            [{ text: 'Single Player', callback_data: 'single_player' }],
+            [{ text: 'Multiplayer', callback_data: 'multiplayer' }]
         ]
     };
     
-    bot.sendMessage(chatId, `👋 Hello ${username}! Choose game mode:`, {
+    bot.sendMessage(chatId, 'Welcome to Tic Tac Toe! Choose game mode:', {
+        reply_markup: menu
+    });
+});
+
+// Handle /play command
+bot.onText(/\/play/, (msg) => {
+    const chatId = msg.chat.id;
+    const menu = {
+        inline_keyboard: [
+            [{ text: 'Single Player', callback_data: 'single_player' }],
+            [{ text: 'Multiplayer', callback_data: 'multiplayer' }]
+        ]
+    };
+    
+    bot.sendMessage(chatId, 'Choose game mode:', {
         reply_markup: menu
     });
 });
@@ -86,249 +164,203 @@ bot.onText(/\/start|\/play/, (msg) => {
 // Handle callback queries
 bot.on('callback_query', async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id;
-    const messageId = callbackQuery.message.message_id;
+    const userId = callbackQuery.from.id;
     const data = callbackQuery.data;
-    const username = callbackQuery.from.username || 'Player';
-
+    const messageId = callbackQuery.message.message_id;
+    
     try {
-        // Single player mode
-        if (data === 'single') {
-            if (playerGames[chatId]) {
+        // Handle game mode selection
+        if (data === 'single_player') {
+            if (playerGames[userId]) {
                 return bot.answerCallbackQuery(callbackQuery.id, { text: 'You are already in a game!' });
             }
-
-            const gameId = generateGameId();
-            activeGames[gameId] = {
-                board: createNewBoard(),
-                players: { X: chatId, O: 'AI' },
-                currentPlayer: 'X',
-                isActive: true
-            };
-            playerGames[chatId] = gameId;
-
-            const keyboard = generateKeyboard(activeGames[gameId].board, gameId);
-            await bot.editMessageText('Your turn (X)', {
-                chat_id: chatId,
-                message_id: messageId,
-                reply_markup: keyboard
-            });
+            
+            const gameId = initGame(chatId, userId);
+            games[gameId].messageId = messageId;
+            
+            await updateGameMessage(gameId);
             return;
         }
-
-        // Multiplayer mode
+        
         if (data === 'multiplayer') {
-            if (playerGames[chatId]) {
+            if (playerGames[userId]) {
                 return bot.answerCallbackQuery(callbackQuery.id, { text: 'You are already in a game!' });
             }
-
-            const gameId = generateGameId();
-            waitingGames[gameId] = {
-                creatorId: chatId,
-                creatorName: username,
-                messageId: messageId
-            };
-
-            const joinKeyboard = {
-                inline_keyboard: [
-                    [{ text: '🎮 Join Game', callback_data: `join_${gameId}` }]
-                ]
-            };
-
-            await bot.editMessageText(
-                `🎲 ${username} wants to play! (Game ID: ${gameId})\n\nClick JOIN to play against them!`,
-                {
+            
+            // Check if there's a waiting player in this chat
+            if (waitingPlayers[chatId] && waitingPlayers[chatId] !== userId) {
+                const player2Id = waitingPlayers[chatId];
+                delete waitingPlayers[chatId];
+                
+                const gameId = initGame(chatId, userId, player2Id);
+                games[gameId].messageId = messageId;
+                
+                await updateGameMessage(gameId);
+                await bot.deleteMessage(chatId, messageId);
+            } else {
+                // No waiting player - add to queue
+                waitingPlayers[chatId] = userId;
+                
+                const joinKeyboard = {
+                    inline_keyboard: [
+                        [{ text: 'Join Game', callback_data: 'join_game' }]
+                    ]
+                };
+                
+                await bot.editMessageText('Waiting for another player to join...', {
                     chat_id: chatId,
                     message_id: messageId,
                     reply_markup: joinKeyboard
-                }
-            );
+                });
+            }
             return;
         }
-
-        // Join multiplayer game
-        if (data.startsWith('join_')) {
-            const gameId = data.split('_')[1];
-            const waitingGame = waitingGames[gameId];
-
-            if (!waitingGame || waitingGame.creatorId === chatId) {
-                return bot.answerCallbackQuery(callbackQuery.id, { text: 'Cannot join this game!' });
+        
+        if (data === 'join_game') {
+            if (playerGames[userId]) {
+                return bot.answerCallbackQuery(callbackQuery.id, { text: 'You are already in a game!' });
             }
-
-            if (playerGames[chatId] || playerGames[waitingGame.creatorId]) {
-                return bot.answerCallbackQuery(callbackQuery.id, { text: 'One of you is already in a game!' });
+            
+            // Check if there's a waiting player in this chat
+            if (waitingPlayers[chatId] && waitingPlayers[chatId] !== userId) {
+                const player1Id = waitingPlayers[chatId];
+                delete waitingPlayers[chatId];
+                
+                const gameId = initGame(chatId, player1Id, userId);
+                games[gameId].messageId = messageId;
+                
+                await updateGameMessage(gameId);
+                await bot.deleteMessage(chatId, messageId);
+            } else {
+                await bot.answerCallbackQuery(callbackQuery.id, { text: 'No games available to join!' });
             }
-
-            // Start the game
-            activeGames[gameId] = {
-                board: createNewBoard(),
-                players: { X: waitingGame.creatorId, O: chatId },
-                currentPlayer: 'X',
-                isActive: true
-            };
-            playerGames[chatId] = gameId;
-            playerGames[waitingGame.creatorId] = gameId;
-            delete waitingGames[gameId];
-
-            const keyboard = generateKeyboard(activeGames[gameId].board, gameId);
-
-            // Notify both players
-            await bot.sendMessage(
-                waitingGame.creatorId,
-                `Game started with @${username}! Your turn (X)`,
-                { reply_markup: keyboard }
-            );
-
-            await bot.sendMessage(
-                chatId,
-                `Game started with @${waitingGame.creatorName}! Their turn (X)`,
-                { reply_markup: keyboard }
-            );
-
-            // Delete waiting message
-            await bot.deleteMessage(waitingGame.creatorId, waitingGame.messageId);
             return;
         }
-
+        
         // Handle game moves
         if (data.includes('_')) {
             const [gameId, action] = data.split('_');
-            const game = activeGames[gameId];
-
-            // Handle surrender
-            if (action === 'surrender') {
-                if (!game || !game.isActive) {
-                    return bot.answerCallbackQuery(callbackQuery.id, { text: 'Game not found!' });
-                }
-
-                const winner = game.players.X === chatId ? 'O' : 'X';
-                const winnerId = game.players[winner];
-                const winnerName = winnerId === 'AI' ? 'AI' : (winnerId === chatId ? 'You' : 'Opponent');
-
-                await bot.sendMessage(
-                    game.players.X,
-                    `🏳️ Game over! ${winnerName} (${winner}) wins by surrender!`
-                );
-                
-                if (game.players.O !== 'AI') {
-                    await bot.sendMessage(
-                        game.players.O,
-                        `🏳️ Game over! ${winnerName} (${winner}) wins by surrender!`
-                    );
-                }
-
-                // Cleanup
-                delete playerGames[game.players.X];
-                if (game.players.O !== 'AI') delete playerGames[game.players.O];
-                delete activeGames[gameId];
-                return;
-            }
-
-            if (!game || !game.isActive) {
+            const game = games[gameId];
+            
+            if (!game || !game.isGameActive) {
                 return bot.answerCallbackQuery(callbackQuery.id, { text: 'Game not found or ended!' });
             }
-
-            // Check if it's player's turn
-            if (game.players[game.currentPlayer] !== chatId) {
+            
+            // Check if it's the player's turn
+            const currentPlayerId = game.players[game.currentPlayer];
+            if (currentPlayerId !== userId && currentPlayerId !== 'AI') {
                 return bot.answerCallbackQuery(callbackQuery.id, { text: "It's not your turn!" });
             }
-
-            // Make move
+            
+            // Handle restart
+            if (action === 'restart') {
+                game.board = Array(9).fill(null);
+                game.currentPlayer = 'X';
+                game.isGameActive = true;
+                
+                await updateGameMessage(gameId);
+                return;
+            }
+            
+            // Handle moves
             const position = parseInt(action);
             if (isNaN(position) || position < 0 || position > 8 || game.board[position]) {
                 return bot.answerCallbackQuery(callbackQuery.id, { text: 'Invalid move!' });
             }
-
+            
+            // Make the move
             game.board[position] = game.currentPlayer;
-
+            
             // Check for winner
             const winner = checkWinner(game.board);
             if (winner) {
-                game.isActive = false;
-                let resultText = '';
+                game.isGameActive = false;
                 
+                const playerXName = await getPlayerName(game.players.X);
+                const playerOName = await getPlayerName(game.players.O);
+                
+                let resultText;
                 if (winner === 'draw') {
-                    resultText = 'Game ended in a draw!';
+                    resultText = `🎮 Game ${gameId}\n\nX: ${playerXName}\nO: ${playerOName}\n\nGame ended in a draw!`;
                 } else {
-                    const winnerId = game.players[winner];
-                    const winnerName = winnerId === 'AI' ? 'AI' : (winnerId === chatId ? 'You' : 'Opponent');
-                    resultText = `${winnerName} (${winner}) wins!`;
+                    const winnerName = winner === 'X' ? playerXName : playerOName;
+                    resultText = `🎮 Game ${gameId}\n\nX: ${playerXName}\nO: ${playerOName}\n\n${winnerName} (${winner}) wins!`;
                 }
-
-                const keyboard = generateKeyboard(game.board, gameId);
                 
-                await bot.sendMessage(game.players.X, resultText, { reply_markup: keyboard });
-                if (game.players.O !== 'AI') {
-                    await bot.sendMessage(game.players.O, resultText, { reply_markup: keyboard });
-                }
-
-                // Cleanup
-                delete playerGames[game.players.X];
-                if (game.players.O !== 'AI') delete playerGames[game.players.O];
-                delete activeGames[gameId];
+                const keyboard = generateBoard(gameId);
+                
+                await bot.editMessageText(resultText, {
+                    chat_id: game.chatId,
+                    message_id: game.messageId,
+                    reply_markup: keyboard
+                });
+                
                 return;
             }
-
-            // Switch turns
+            
+            // Switch player
             game.currentPlayer = game.currentPlayer === 'X' ? 'O' : 'X';
-            const keyboard = generateKeyboard(game.board, gameId);
-
-            // Handle AI move in single player
-            if (game.players.O === 'AI' && game.currentPlayer === 'O') {
-                // Simple AI - find first empty spot
-                const emptyIndex = game.board.findIndex(cell => cell === null);
-                if (emptyIndex !== -1) {
-                    game.board[emptyIndex] = 'O';
-                    
-                    // Check if AI won
-                    const winner = checkWinner(game.board);
-                    if (winner) {
-                        game.isActive = false;
-                        let resultText = winner === 'draw' ? 'Game ended in a draw!' : 'AI wins!';
-                        
-                        await bot.sendMessage(
-                            game.players.X, 
-                            resultText, 
-                            { reply_markup: generateKeyboard(game.board, gameId) }
-                        );
-                        
-                        delete playerGames[game.players.X];
-                        delete activeGames[gameId];
-                        return;
-                    }
-                    
-                    game.currentPlayer = 'X';
-                    await bot.sendMessage(
-                        game.players.X,
-                        'Your turn (X)',
-                        { reply_markup: generateKeyboard(game.board, gameId) }
-                    );
-                }
-            } else {
-                // Human player's turn
-                const currentPlayerId = game.players[game.currentPlayer];
-                const currentPlayerName = currentPlayerId === chatId ? 'Your' : 'Opponent\'s';
-                
-                await bot.sendMessage(
-                    currentPlayerId,
-                    `${currentPlayerName} turn (${game.currentPlayer})`,
-                    { reply_markup: keyboard }
-                );
-                
-                // Notify other player
-                const otherPlayerId = game.currentPlayer === 'X' ? game.players.O : game.players.X;
-                if (otherPlayerId !== 'AI') {
-                    await bot.sendMessage(
-                        otherPlayerId,
-                        `Waiting for ${currentPlayerName.toLowerCase()} move (${game.currentPlayer})`,
-                        { reply_markup: keyboard }
-                    );
-                }
+            await updateGameMessage(gameId);
+            
+            // If single player and AI's turn
+            if (game.isSinglePlayer && game.currentPlayer === 'O') {
+                setTimeout(() => makeAiMove(gameId), 1000);
             }
         }
     } catch (error) {
-        console.error('Error:', error);
+        console.error('Error handling callback:', error);
         bot.answerCallbackQuery(callbackQuery.id, { text: 'An error occurred!' });
     }
 });
+
+// Simple AI move for single player
+async function makeAiMove(gameId) {
+    const game = games[gameId];
+    if (!game || !game.isGameActive || game.currentPlayer !== 'O') return;
+    
+    // Find empty positions
+    const emptyPositions = game.board
+        .map((val, idx) => val === null ? idx : null)
+        .filter(val => val !== null);
+    
+    if (emptyPositions.length === 0) return;
+    
+    // Random move
+    const randomIndex = Math.floor(Math.random() * emptyPositions.length);
+    const position = emptyPositions[randomIndex];
+    
+    // Make the move
+    game.board[position] = 'O';
+    
+    // Check for winner
+    const winner = checkWinner(game.board);
+    if (winner) {
+        game.isGameActive = false;
+        
+        const playerXName = await getPlayerName(game.players.X);
+        
+        let resultText;
+        if (winner === 'draw') {
+            resultText = `🎮 Game ${gameId}\n\nX: ${playerXName}\nO: AI\n\nGame ended in a draw!`;
+        } else {
+            const winnerName = winner === 'X' ? playerXName : 'AI';
+            resultText = `🎮 Game ${gameId}\n\nX: ${playerXName}\nO: AI\n\n${winnerName} (${winner}) wins!`;
+        }
+        
+        const keyboard = generateBoard(gameId);
+        
+        await bot.editMessageText(resultText, {
+            chat_id: game.chatId,
+            message_id: game.messageId,
+            reply_markup: keyboard
+        });
+        
+        return;
+    }
+    
+    // Switch back to player
+    game.currentPlayer = 'X';
+    await updateGameMessage(gameId);
+}
 
 console.log('Tic Tac Toe bot is running...');

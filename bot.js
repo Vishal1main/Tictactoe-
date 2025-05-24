@@ -11,9 +11,9 @@ app.get('/', (req, res) => res.send('Tic Tac Toe Bot is running!'));
 app.listen(port, () => console.log(`Server running on port ${port}`));
 
 // Game data storage
-const games = {};          // { gameId: gameData }
-const playerGames = {};    // { playerId: gameId }
-const waitingPlayers = {}; // { chatId: playerId }
+const games = {};
+const playerGames = {};
+const waitingPlayers = {};
 
 // Generate a random game ID
 function generateGameId() {
@@ -28,23 +28,22 @@ function generateGameId() {
 // Initialize a new game
 function initGame(chatId, player1Id, player2Id = null) {
     const gameId = generateGameId();
-    const isSinglePlayer = player2Id === null;
     
     games[gameId] = {
         chatId,
         board: Array(9).fill(null),
         players: {
             X: player1Id,
-            O: isSinglePlayer ? 'AI' : player2Id
+            O: player2Id || 'AI'
         },
         currentPlayer: 'X',
         isGameActive: true,
-        isSinglePlayer,
-        messageId: null
+        isSinglePlayer: !player2Id,
+        messageIds: {} // Store message IDs for each player
     };
     
     playerGames[player1Id] = gameId;
-    if (!isSinglePlayer) playerGames[player2Id] = gameId;
+    if (player2Id) playerGames[player2Id] = gameId;
     
     return gameId;
 }
@@ -52,9 +51,9 @@ function initGame(chatId, player1Id, player2Id = null) {
 // Check for winner or draw
 function checkWinner(board) {
     const winPatterns = [
-        [0, 1, 2], [3, 4, 5], [6, 7, 8], // rows
-        [0, 3, 6], [1, 4, 7], [2, 5, 8], // columns
-        [0, 4, 8], [2, 4, 6]             // diagonals
+        [0, 1, 2], [3, 4, 5], [6, 7, 8],
+        [0, 3, 6], [1, 4, 7], [2, 5, 8],
+        [0, 4, 8], [2, 4, 6]
     ];
 
     for (const pattern of winPatterns) {
@@ -67,7 +66,7 @@ function checkWinner(board) {
     return board.includes(null) ? null : 'draw';
 }
 
-// Generate game board keyboard with game info
+// Generate game board keyboard
 function generateBoard(gameId) {
     const game = games[gameId];
     const keyboard = {
@@ -107,32 +106,34 @@ async function getPlayerName(playerId) {
     }
 }
 
-// Update game message with current status
+// Update game message for all players
 async function updateGameMessage(gameId) {
     const game = games[gameId];
-    if (!game || !game.messageId) return;
+    if (!game) return;
 
     const playerXName = await getPlayerName(game.players.X);
-    const playerOName = await getPlayerName(game.players.O);
+    const playerOName = game.isSinglePlayer ? 'AI' : await getPlayerName(game.players.O);
     const currentPlayerName = game.currentPlayer === 'X' ? playerXName : playerOName;
 
     const gameInfo = `🎮 Game ${gameId}\n\nX: ${playerXName}\nO: ${playerOName}\n\nIt's ${game.currentPlayer}'s turn (${currentPlayerName})`;
-
     const keyboard = generateBoard(gameId);
 
-    try {
-        await bot.editMessageText(gameInfo, {
-            chat_id: game.chatId,
-            message_id: game.messageId,
-            reply_markup: keyboard
-        });
-    } catch (error) {
-        console.error('Error updating game message:', error);
+    // Update message for all players
+    const updatePromises = [];
+    for (const playerId in game.messageIds) {
+        updatePromises.push(
+            bot.editMessageText(gameInfo, {
+                chat_id: playerId,
+                message_id: game.messageIds[playerId],
+                reply_markup: keyboard
+            }).catch(console.error)
+        );
     }
+    await Promise.all(updatePromises);
 }
 
-// Handle /start command
-bot.onText(/\/start/, (msg) => {
+// Handle /start and /play commands
+bot.onText(/\/(start|play)/, (msg) => {
     const chatId = msg.chat.id;
     const menu = {
         inline_keyboard: [
@@ -146,28 +147,13 @@ bot.onText(/\/start/, (msg) => {
     });
 });
 
-// Handle /play command
-bot.onText(/\/play/, (msg) => {
-    const chatId = msg.chat.id;
-    const menu = {
-        inline_keyboard: [
-            [{ text: 'Single Player', callback_data: 'single_player' }],
-            [{ text: 'Multiplayer', callback_data: 'multiplayer' }]
-        ]
-    };
-    
-    bot.sendMessage(chatId, 'Choose game mode:', {
-        reply_markup: menu
-    });
-});
-
 // Handle callback queries
 bot.on('callback_query', async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id;
     const userId = callbackQuery.from.id;
     const data = callbackQuery.data;
     const messageId = callbackQuery.message.message_id;
-    
+
     try {
         // Handle game mode selection
         if (data === 'single_player') {
@@ -176,7 +162,7 @@ bot.on('callback_query', async (callbackQuery) => {
             }
             
             const gameId = initGame(chatId, userId);
-            games[gameId].messageId = messageId;
+            games[gameId].messageIds[userId] = messageId;
             
             await updateGameMessage(gameId);
             return;
@@ -193,7 +179,14 @@ bot.on('callback_query', async (callbackQuery) => {
                 delete waitingPlayers[chatId];
                 
                 const gameId = initGame(chatId, userId, player2Id);
-                games[gameId].messageId = messageId;
+                games[gameId].messageIds[userId] = messageId;
+                
+                // Send new game message to player 2
+                const gameInfo = `🎮 Game ${gameId}\n\nX: ${await getPlayerName(userId)}\nO: ${await getPlayerName(player2Id)}\n\nIt's X's turn (${await getPlayerName(userId)})`;
+                const keyboard = generateBoard(gameId);
+                
+                const newMessage = await bot.sendMessage(player2Id, gameInfo, { reply_markup: keyboard });
+                games[gameId].messageIds[player2Id] = newMessage.message_id;
                 
                 await updateGameMessage(gameId);
                 await bot.deleteMessage(chatId, messageId);
@@ -227,7 +220,17 @@ bot.on('callback_query', async (callbackQuery) => {
                 delete waitingPlayers[chatId];
                 
                 const gameId = initGame(chatId, player1Id, userId);
-                games[gameId].messageId = messageId;
+                games[gameId].messageIds[userId] = messageId;
+                
+                // Update player 1's message
+                const gameInfo = `🎮 Game ${gameId}\n\nX: ${await getPlayerName(player1Id)}\nO: ${await getPlayerName(userId)}\n\nIt's X's turn (${await getPlayerName(player1Id)})`;
+                const keyboard = generateBoard(gameId);
+                
+                await bot.editMessageText(gameInfo, {
+                    chat_id: player1Id,
+                    message_id: games[gameId].messageIds[player1Id],
+                    reply_markup: keyboard
+                });
                 
                 await updateGameMessage(gameId);
                 await bot.deleteMessage(chatId, messageId);
@@ -237,7 +240,7 @@ bot.on('callback_query', async (callbackQuery) => {
             return;
         }
         
-        // Handle game moves
+        // Handle game moves and restart
         if (data.includes('_')) {
             const [gameId, action] = data.split('_');
             const game = games[gameId];
@@ -254,6 +257,11 @@ bot.on('callback_query', async (callbackQuery) => {
             
             // Handle restart
             if (action === 'restart') {
+                // Only allow restart by players in this game
+                if (game.players.X !== userId && game.players.O !== userId) {
+                    return bot.answerCallbackQuery(callbackQuery.id, { text: "You're not in this game!" });
+                }
+                
                 game.board = Array(9).fill(null);
                 game.currentPlayer = 'X';
                 game.isGameActive = true;
@@ -277,7 +285,7 @@ bot.on('callback_query', async (callbackQuery) => {
                 game.isGameActive = false;
                 
                 const playerXName = await getPlayerName(game.players.X);
-                const playerOName = await getPlayerName(game.players.O);
+                const playerOName = game.isSinglePlayer ? 'AI' : await getPlayerName(game.players.O);
                 
                 let resultText;
                 if (winner === 'draw') {
@@ -287,14 +295,7 @@ bot.on('callback_query', async (callbackQuery) => {
                     resultText = `🎮 Game ${gameId}\n\nX: ${playerXName}\nO: ${playerOName}\n\n${winnerName} (${winner}) wins!`;
                 }
                 
-                const keyboard = generateBoard(gameId);
-                
-                await bot.editMessageText(resultText, {
-                    chat_id: game.chatId,
-                    message_id: game.messageId,
-                    reply_markup: keyboard
-                });
-                
+                await updateGameMessage(gameId);
                 return;
             }
             
@@ -347,14 +348,7 @@ async function makeAiMove(gameId) {
             resultText = `🎮 Game ${gameId}\n\nX: ${playerXName}\nO: AI\n\n${winnerName} (${winner}) wins!`;
         }
         
-        const keyboard = generateBoard(gameId);
-        
-        await bot.editMessageText(resultText, {
-            chat_id: game.chatId,
-            message_id: game.messageId,
-            reply_markup: keyboard
-        });
-        
+        await updateGameMessage(gameId);
         return;
     }
     

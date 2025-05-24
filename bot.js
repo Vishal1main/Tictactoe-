@@ -1,9 +1,8 @@
 const TelegramBot = require('node-telegram-bot-api');
-const { InlineKeyboard } = require('node-telegram-keyboard-wrapper');
 const express = require('express');
 
 // Replace with your Telegram Bot Token
-const token = 'YOUR_TELEGRAM_BOT_TOKEN';
+const token = process.env.TELEGRAM_BOT_TOKEN || 'YOUR_TELEGRAM_BOT_TOKEN';
 const port = process.env.PORT || 3000;
 
 const app = express();
@@ -67,44 +66,61 @@ function checkWinner(board) {
     return board.includes(null) ? null : 'draw';
 }
 
-// Generate game board keyboard
+// Generate game board keyboard (without external wrapper)
 function generateBoard(board, gameId) {
-    const keyboard = new InlineKeyboard();
+    const keyboard = {
+        inline_keyboard: []
+    };
 
-    for (let i = 0; i < 9; i++) {
-        keyboard.addButton({
-            text: board[i] ? board[i] : ' ',
-            callback_data: `${gameId}_${i}`
-        });
-
-        if ((i + 1) % 3 === 0 && i < 8) keyboard.addRow();
+    // Create 3x3 grid
+    for (let row = 0; row < 3; row++) {
+        const rowButtons = [];
+        for (let col = 0; col < 3; col++) {
+            const index = row * 3 + col;
+            rowButtons.push({
+                text: board[index] || ' ',
+                callback_data: `${gameId}_${index}`
+            });
+        }
+        keyboard.inline_keyboard.push(rowButtons);
     }
 
-    keyboard.addRow({ text: 'Restart Game', callback_data: `${gameId}_restart` });
+    // Add restart button
+    keyboard.inline_keyboard.push([{
+        text: 'Restart Game',
+        callback_data: `${gameId}_restart`
+    }]);
+
     return keyboard;
 }
 
 // Handle /start command
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
-    const menu = new InlineKeyboard()
-        .addRow({ text: 'Single Player', callback_data: 'single_player' })
-        .addRow({ text: 'Multiplayer', callback_data: 'multiplayer' });
+    const menu = {
+        inline_keyboard: [
+            [{ text: 'Single Player', callback_data: 'single_player' }],
+            [{ text: 'Multiplayer', callback_data: 'multiplayer' }]
+        ]
+    };
     
     bot.sendMessage(chatId, 'Welcome to Tic Tac Toe! Choose game mode:', {
-        reply_markup: menu.markup()
+        reply_markup: menu
     });
 });
 
 // Handle /play command
 bot.onText(/\/play/, (msg) => {
     const chatId = msg.chat.id;
-    const menu = new InlineKeyboard()
-        .addRow({ text: 'Single Player', callback_data: 'single_player' })
-        .addRow({ text: 'Multiplayer', callback_data: 'multiplayer' });
+    const menu = {
+        inline_keyboard: [
+            [{ text: 'Single Player', callback_data: 'single_player' }],
+            [{ text: 'Multiplayer', callback_data: 'multiplayer' }]
+        ]
+    };
     
     bot.sendMessage(chatId, 'Choose game mode:', {
-        reply_markup: menu.markup()
+        reply_markup: menu
     });
 });
 
@@ -126,16 +142,18 @@ bot.onText(/\/invite (.+)/, (msg, match) => {
         timestamp: Date.now()
     };
     
-    const acceptKeyboard = new InlineKeyboard()
-        .addRow({ text: 'Accept', callback_data: `accept_${invitationId}` })
-        .addRow({ text: 'Decline', callback_data: `decline_${invitationId}` });
+    const acceptKeyboard = {
+        inline_keyboard: [
+            [{ text: 'Accept', callback_data: `accept_${invitationId}` }],
+            [{ text: 'Decline', callback_data: `decline_${invitationId}` }]
+        ]
+    };
     
     bot.sendMessage(inviterId, `Invitation sent to @${inviteeUsername}`);
     
-    // This would need actual user lookup in a real implementation
-    // For demo, we'll assume the invitee is listening to messages
+    // In a real implementation, you'd need to actually send this to the invitee
     bot.sendMessage(inviterId, `@${inviteeUsername}, you've been invited to play Tic Tac Toe!`, {
-        reply_markup: acceptKeyboard.markup()
+        reply_markup: acceptKeyboard
     });
 });
 
@@ -159,7 +177,7 @@ bot.on('callback_query', async (callbackQuery) => {
             await bot.editMessageText(`Your turn (X)`, {
                 chat_id: chatId,
                 message_id: messageId,
-                reply_markup: keyboard.markup()
+                reply_markup: keyboard
             });
             return;
         }
@@ -177,14 +195,14 @@ bot.on('callback_query', async (callbackQuery) => {
             const [action, invitationId] = data.split('_');
             const invitation = invitations[invitationId];
             
-            if (!invitation || invitation.inviteeUsername !== callbackQuery.from.username) {
+            if (!invitation) {
                 return bot.answerCallbackQuery(callbackQuery.id, { text: 'Invalid invitation!' });
             }
             
             delete invitations[invitationId];
             
             if (action === 'decline') {
-                bot.sendMessage(invitation.inviterId, `@${callbackQuery.from.username} declined your invitation.`);
+                bot.sendMessage(invitation.inviterId, `@${callbackQuery.from.username || 'User'} declined your invitation.`);
                 return bot.editMessageText('Invitation declined.', {
                     chat_id: chatId,
                     message_id: messageId
@@ -205,11 +223,11 @@ bot.on('callback_query', async (callbackQuery) => {
             const playerO = game.players.O;
             
             await bot.sendMessage(playerX, `Game started! Your turn (X)`, {
-                reply_markup: keyboard.markup()
+                reply_markup: keyboard
             });
             
-            await bot.sendMessage(playerO, `Game started! Waiting for @${bot.getChat(playerX).then(c => c.username)} to play (X)`, {
-                reply_markup: keyboard.markup()
+            await bot.sendMessage(playerO, `Game started! Waiting for opponent to play (X)`, {
+                reply_markup: keyboard
             });
             
             return;
@@ -240,17 +258,17 @@ bot.on('callback_query', async (callbackQuery) => {
                 const playerX = game.players.X;
                 const playerO = game.players.O;
                 
-                await bot.editMessageText(`Game restarted! @${bot.getChat(playerX).then(c => c.username)}'s turn (X)`, {
+                await bot.editMessageText(`Game restarted! Your turn (X)`, {
                     chat_id: playerX,
                     message_id: messageId,
-                    reply_markup: keyboard.markup()
+                    reply_markup: keyboard
                 });
                 
                 if (!game.isSinglePlayer) {
-                    await bot.editMessageText(`Game restarted! @${bot.getChat(playerX).then(c => c.username)}'s turn (X)`, {
+                    await bot.editMessageText(`Game restarted! Opponent's turn (X)`, {
                         chat_id: playerO,
                         message_id: messageId,
-                        reply_markup: keyboard.markup()
+                        reply_markup: keyboard
                     });
                 }
                 
@@ -276,7 +294,7 @@ bot.on('callback_query', async (callbackQuery) => {
                     resultText = 'Game ended in a draw!';
                 } else {
                     const winnerId = game.players[winner];
-                    const winnerName = winnerId === 'AI' ? 'AI' : `@${bot.getChat(winnerId).then(c => c.username)}`;
+                    const winnerName = winnerId === 'AI' ? 'AI' : 'You';
                     resultText = `${winnerName} (${winner}) wins!`;
                 }
                 
@@ -286,14 +304,14 @@ bot.on('callback_query', async (callbackQuery) => {
                 await bot.editMessageText(resultText, {
                     chat_id: game.players.X,
                     message_id: messageId,
-                    reply_markup: keyboard.markup()
+                    reply_markup: keyboard
                 });
                 
                 if (!game.isSinglePlayer) {
                     await bot.editMessageText(resultText, {
                         chat_id: game.players.O,
                         message_id: messageId,
-                        reply_markup: keyboard.markup()
+                        reply_markup: keyboard
                     });
                 }
                 
@@ -306,12 +324,12 @@ bot.on('callback_query', async (callbackQuery) => {
             // Update board
             const keyboard = generateBoard(game.board, gameId);
             const nextPlayerId = game.players[game.currentPlayer];
-            const currentPlayerName = nextPlayerId === 'AI' ? 'AI' : `@${bot.getChat(nextPlayerId).then(c => c.username)}`;
+            const currentPlayerName = nextPlayerId === 'AI' ? 'AI' : 'You';
             
             await bot.editMessageText(`${currentPlayerName}'s turn (${game.currentPlayer})`, {
                 chat_id: chatId,
                 message_id: messageId,
-                reply_markup: keyboard.markup()
+                reply_markup: keyboard
             });
             
             // If single player and AI's turn
@@ -323,10 +341,10 @@ bot.on('callback_query', async (callbackQuery) => {
             if (!game.isSinglePlayer) {
                 const otherPlayerId = game.currentPlayer === 'X' ? game.players.O : game.players.X;
                 
-                await bot.editMessageText(`${currentPlayerName}'s turn (${game.currentPlayer})`, {
+                await bot.editMessageText(`Opponent's turn (${game.currentPlayer})`, {
                     chat_id: otherPlayerId,
                     message_id: messageId,
-                    reply_markup: keyboard.markup()
+                    reply_markup: keyboard
                 });
             }
         }
@@ -348,18 +366,38 @@ async function makeAiMove(gameId, messageId) {
     
     if (emptyPositions.length === 0) return;
     
-    // Random move (for simplicity - could implement minimax for perfect AI)
+    // Random move
     const randomIndex = Math.floor(Math.random() * emptyPositions.length);
     const position = emptyPositions[randomIndex];
     
-    // Simulate click
-    const callbackData = `${gameId}_${position}`;
-    bot.answerCallbackQuery({ 
-        id: `${messageId}_${position}`,
-        from: { id: -1, is_bot: true },
-        message: { chat: { id: game.players.X }, message_id: messageId },
-        data: callbackData
+    // Make the move
+    game.board[position] = 'O';
+    
+    // Check for winner
+    const winner = checkWinner(game.board);
+    if (winner) {
+        game.isGameActive = false;
+        let resultText = winner === 'draw' ? 'Game ended in a draw!' : `AI (${winner}) wins!`;
+        
+        const keyboard = generateBoard(game.board, gameId);
+        await bot.editMessageText(resultText, {
+            chat_id: game.players.X,
+            message_id: messageId,
+            reply_markup: keyboard
+        });
+        return;
+    }
+    
+    // Switch back to player
+    game.currentPlayer = 'X';
+    
+    // Update board
+    const keyboard = generateBoard(game.board, gameId);
+    await bot.editMessageText(`Your turn (X)`, {
+        chat_id: game.players.X,
+        message_id: messageId,
+        reply_markup: keyboard
     });
 }
 
-console.log('Multiplayer Tic Tac Toe bot is running...');
+console.log('Tic Tac Toe bot is running...');

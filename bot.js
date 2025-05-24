@@ -13,7 +13,7 @@ app.listen(port, () => console.log(`Server running on port ${port}`));
 // Game data storage
 const games = {};
 const playerGames = {};
-const waitingPlayers = []; // Players waiting for a match
+const availableGames = {}; // Games waiting for players
 
 // Generate a random game ID
 function generateGameId() {
@@ -26,23 +26,41 @@ function generateGameId() {
 }
 
 // Initialize a new game
-function initGame(player1Id, player2Id) {
+function initGame(creatorId) {
     const gameId = generateGameId();
+    
+    availableGames[gameId] = {
+        creatorId,
+        creatorName: `🎲 ${creatorId}` // Will be updated with username
+    };
+    
+    return gameId;
+}
+
+// Start the actual game when second player joins
+function startGame(gameId, joinerId) {
+    const creatorId = availableGames[gameId].creatorId;
+    const creatorName = availableGames[gameId].creatorName;
     
     games[gameId] = {
         board: Array(9).fill(null),
         players: {
-            X: player1Id,
-            O: player2Id
+            X: creatorId,
+            O: joinerId,
+            names: {
+                [creatorId]: creatorName,
+                [joinerId]: `🎲 ${joinerId}` // Will be updated with username
+            }
         },
         currentPlayer: 'X',
         isGameActive: true
     };
     
-    playerGames[player1Id] = gameId;
-    playerGames[player2Id] = gameId;
+    playerGames[creatorId] = gameId;
+    playerGames[joinerId] = gameId;
+    delete availableGames[gameId];
     
-    return gameId;
+    return games[gameId];
 }
 
 // Check for winner or draw
@@ -82,13 +100,41 @@ function generateBoard(board, gameId) {
         keyboard.inline_keyboard.push(rowButtons);
     }
 
-    // Add restart button
+    // Add surrender button
     keyboard.inline_keyboard.push([{
-        text: 'Restart Game',
-        callback_data: `${gameId}_restart`
+        text: '🏳️ Surrender',
+        callback_data: `${gameId}_surrender`
     }]);
 
     return keyboard;
+}
+
+// End game with surrender
+async function handleSurrender(gameId, surrenderingPlayerId) {
+    const game = games[gameId];
+    if (!game) return;
+
+    game.isGameActive = false;
+    
+    // Determine winner (opposite player)
+    const winnerSymbol = game.players.X === surrenderingPlayerId ? 'O' : 'X';
+    const winnerId = game.players[winnerSymbol];
+    
+    // Get player names
+    const winnerName = game.players.names[winnerId] || 'Opponent';
+    const loserName = game.players.names[surrenderingPlayerId] || 'You';
+    
+    const resultText = `${loserName} surrendered! ${winnerName} (${winnerSymbol}) wins!`;
+    const keyboard = generateBoard(game.board, gameId);
+
+    // Notify both players
+    await bot.sendMessage(game.players.X, resultText, { reply_markup: keyboard });
+    await bot.sendMessage(game.players.O, resultText, { reply_markup: keyboard });
+    
+    // Clean up
+    delete playerGames[game.players.X];
+    delete playerGames[game.players.O];
+    delete games[gameId];
 }
 
 // Handle /start command
@@ -126,6 +172,7 @@ bot.on('callback_query', async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id;
     const data = callbackQuery.data;
     const messageId = callbackQuery.message.message_id;
+    const username = callbackQuery.from.username || 'Player';
     
     try {
         // Handle game mode selection
@@ -134,9 +181,22 @@ bot.on('callback_query', async (callbackQuery) => {
                 return bot.answerCallbackQuery(callbackQuery.id, { text: 'You are already in a game!' });
             }
             
-            const gameId = initGame(chatId, 'AI');
-            const game = games[gameId];
-            const keyboard = generateBoard(game.board, gameId);
+            const gameId = generateGameId();
+            games[gameId] = {
+                board: Array(9).fill(null),
+                players: {
+                    X: chatId,
+                    O: 'AI',
+                    names: {
+                        [chatId]: `🎲 ${username}`
+                    }
+                },
+                currentPlayer: 'X',
+                isGameActive: true
+            };
+            
+            playerGames[chatId] = gameId;
+            const keyboard = generateBoard(games[gameId].board, gameId);
             
             await bot.editMessageText(`Your turn (X)`, {
                 chat_id: chatId,
@@ -151,79 +211,80 @@ bot.on('callback_query', async (callbackQuery) => {
                 return bot.answerCallbackQuery(callbackQuery.id, { text: 'You are already in a game!' });
             }
             
-            // Check if there's a waiting player
-            if (waitingPlayers.length > 0 && waitingPlayers[0] !== chatId) {
-                const player2Id = waitingPlayers.shift();
-                const gameId = initGame(chatId, player2Id);
-                const game = games[gameId];
-                const keyboard = generateBoard(game.board, gameId);
-                
-                // Notify both players
-                await bot.sendMessage(chatId, `Game started! Your turn (X)`, {
-                    reply_markup: keyboard
-                });
-                
-                await bot.sendMessage(player2Id, `Game started! Your turn (O)`, {
-                    reply_markup: keyboard
-                });
-                
-                await bot.deleteMessage(chatId, messageId);
-                await bot.deleteMessage(player2Id, messageId);
-            } else {
-                // No waiting player - add to queue
-                if (!waitingPlayers.includes(chatId)) {
-                    waitingPlayers.push(chatId);
-                    
-                    const joinKeyboard = {
-                        inline_keyboard: [
-                            [{ text: 'Join Game', callback_data: 'join_game' }]
-                        ]
-                    };
-                    
-                    await bot.editMessageText('Waiting for another player to join...', {
-                        chat_id: chatId,
-                        message_id: messageId,
-                        reply_markup: joinKeyboard
-                    });
-                } else {
-                    await bot.answerCallbackQuery(callbackQuery.id, { text: 'Already waiting for a player!' });
+            const gameId = initGame(chatId);
+            availableGames[gameId].creatorName = `🎲 ${username}`;
+            
+            const joinKeyboard = {
+                inline_keyboard: [
+                    [{ 
+                        text: 'Join Game', 
+                        callback_data: `join_${gameId}` 
+                    }]
+                ]
+            };
+            
+            await bot.editMessageText(
+                `${availableGames[gameId].creatorName} wants to play Tic Tac Toe! (Game ID: ${gameId})\n\nClick Join Game to play against them!`, 
+                {
+                    chat_id: chatId,
+                    message_id: messageId,
+                    reply_markup: joinKeyboard
                 }
-            }
+            );
             return;
         }
         
-        if (data === 'join_game') {
+        // Handle join game
+        if (data.startsWith('join_')) {
+            const gameId = data.split('_')[1];
+            
+            if (!availableGames[gameId]) {
+                return bot.answerCallbackQuery(callbackQuery.id, { text: 'Game not available!' });
+            }
+            
             if (playerGames[chatId]) {
                 return bot.answerCallbackQuery(callbackQuery.id, { text: 'You are already in a game!' });
             }
             
-            // Check if there's a waiting player
-            if (waitingPlayers.length > 0 && waitingPlayers[0] !== chatId) {
-                const player1Id = waitingPlayers.shift();
-                const gameId = initGame(player1Id, chatId);
-                const game = games[gameId];
-                const keyboard = generateBoard(game.board, gameId);
-                
-                // Notify both players
-                await bot.sendMessage(player1Id, `Game started! Your turn (X)`, {
-                    reply_markup: keyboard
-                });
-                
-                await bot.sendMessage(chatId, `Game started! Your turn (O)`, {
-                    reply_markup: keyboard
-                });
-                
-                await bot.deleteMessage(chatId, messageId);
-                await bot.deleteMessage(player1Id, messageId);
-            } else {
-                await bot.answerCallbackQuery(callbackQuery.id, { text: 'No games available to join!' });
+            if (availableGames[gameId].creatorId === chatId) {
+                return bot.answerCallbackQuery(callbackQuery.id, { text: "You can't join your own game!" });
             }
+            
+            const game = startGame(gameId, chatId);
+            game.players.names[chatId] = `🎲 ${username}`;
+            
+            const keyboard = generateBoard(game.board, gameId);
+            
+            // Notify both players
+            await bot.sendMessage(
+                game.players.X, 
+                `Game started against ${game.players.names[game.players.O]}! Your turn (X)`, 
+                { reply_markup: keyboard }
+            );
+            
+            await bot.sendMessage(
+                game.players.O, 
+                `Game started against ${game.players.names[game.players.X]}! Waiting for their move (X)`, 
+                { reply_markup: keyboard }
+            );
+            
             return;
         }
         
         // Handle game moves
         if (data.includes('_')) {
             const [gameId, action] = data.split('_');
+            
+            // Handle surrender
+            if (action === 'surrender') {
+                if (!games[gameId]) {
+                    return bot.answerCallbackQuery(callbackQuery.id, { text: 'Game not found!' });
+                }
+                
+                await handleSurrender(gameId, chatId);
+                return;
+            }
+            
             const game = games[gameId];
             
             if (!game || !game.isGameActive) {
@@ -234,33 +295,6 @@ bot.on('callback_query', async (callbackQuery) => {
             const currentPlayerId = game.players[game.currentPlayer];
             if (currentPlayerId !== chatId && currentPlayerId !== 'AI') {
                 return bot.answerCallbackQuery(callbackQuery.id, { text: "It's not your turn!" });
-            }
-            
-            // Handle restart
-            if (action === 'restart') {
-                game.board = Array(9).fill(null);
-                game.currentPlayer = 'X';
-                game.isGameActive = true;
-                
-                const keyboard = generateBoard(game.board, gameId);
-                const playerX = game.players.X;
-                const playerO = game.players.O;
-                
-                await bot.editMessageText(`Game restarted! Your turn (X)`, {
-                    chat_id: playerX,
-                    message_id: messageId,
-                    reply_markup: keyboard
-                });
-                
-                if (playerO !== 'AI') {
-                    await bot.editMessageText(`Game restarted! Opponent's turn (X)`, {
-                        chat_id: playerO,
-                        message_id: messageId,
-                        reply_markup: keyboard
-                    });
-                }
-                
-                return;
             }
             
             // Handle moves
@@ -282,26 +316,22 @@ bot.on('callback_query', async (callbackQuery) => {
                     resultText = 'Game ended in a draw!';
                 } else {
                     const winnerId = game.players[winner];
-                    const winnerName = winnerId === 'AI' ? 'AI' : 'You';
+                    const winnerName = game.players.names[winnerId] || 'Opponent';
                     resultText = `${winnerName} (${winner}) wins!`;
                 }
                 
                 const keyboard = generateBoard(game.board, gameId);
                 
                 // Update both players' boards
-                await bot.editMessageText(resultText, {
-                    chat_id: game.players.X,
-                    message_id: messageId,
-                    reply_markup: keyboard
-                });
-                
+                await bot.sendMessage(game.players.X, resultText, { reply_markup: keyboard });
                 if (game.players.O !== 'AI') {
-                    await bot.editMessageText(resultText, {
-                        chat_id: game.players.O,
-                        message_id: messageId,
-                        reply_markup: keyboard
-                    });
+                    await bot.sendMessage(game.players.O, resultText, { reply_markup: keyboard });
                 }
+                
+                // Clean up
+                delete playerGames[game.players.X];
+                if (game.players.O !== 'AI') delete playerGames[game.players.O];
+                delete games[gameId];
                 
                 return;
             }
@@ -313,18 +343,46 @@ bot.on('callback_query', async (callbackQuery) => {
             const keyboard = generateBoard(game.board, gameId);
             const nextPlayerId = game.players[game.currentPlayer];
             
-            await bot.editMessageText(`Your turn (${game.currentPlayer})`, {
-                chat_id: nextPlayerId,
-                message_id: messageId,
-                reply_markup: keyboard
-            });
-            
-            // Update other player's board
-            const otherPlayerId = game.currentPlayer === 'X' ? game.players.O : game.players.X;
-            if (otherPlayerId !== 'AI') {
-                await bot.editMessageText(`Opponent's turn (${game.currentPlayer})`, {
-                    chat_id: otherPlayerId,
-                    message_id: messageId,
+            if (nextPlayerId === 'AI') {
+                // AI move
+                await bot.sendMessage(game.players.X, `AI is thinking...`, { reply_markup: keyboard });
+                
+                setTimeout(async () => {
+                    // Simple AI move - find first empty spot
+                    const emptyIndex = game.board.findIndex(cell => cell === null);
+                    if (emptyIndex !== -1) {
+                        game.board[emptyIndex] = 'O';
+                        
+                        // Check if AI won
+                        const winner = checkWinner(game.board);
+                        if (winner) {
+                            game.isGameActive = false;
+                            let resultText = winner === 'draw' ? 'Game ended in a draw!' : 'AI wins!';
+                            await bot.sendMessage(game.players.X, resultText, { 
+                                reply_markup: generateBoard(game.board, gameId) 
+                            });
+                            
+                            delete playerGames[game.players.X];
+                            delete games[gameId];
+                            return;
+                        }
+                        
+                        game.currentPlayer = 'X';
+                        await bot.sendMessage(game.players.X, `Your turn (X)`, { 
+                            reply_markup: generateBoard(game.board, gameId) 
+                        });
+                    }
+                }, 1000);
+            } else {
+                // Human player's turn
+                const currentPlayerName = game.players.names[nextPlayerId] || 'You';
+                const otherPlayerId = game.currentPlayer === 'X' ? game.players.O : game.players.X;
+                
+                await bot.sendMessage(nextPlayerId, `${currentPlayerName}'s turn (${game.currentPlayer})`, {
+                    reply_markup: keyboard
+                });
+                
+                await bot.sendMessage(otherPlayerId, `Waiting for ${currentPlayerName}'s move (${game.currentPlayer})`, {
                     reply_markup: keyboard
                 });
             }
